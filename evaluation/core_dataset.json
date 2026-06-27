@@ -1,0 +1,62 @@
+[
+  {
+    "id": "core-001",
+    "question": "What is an ONU?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "1.1"}],
+    "answer": "ONU (Optical Network Unit) is a key component in GPON networks."
+  },
+  {
+    "id": "core-002",
+    "question": "What is the Rx Sensitivity of the ONU?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "1.2"}],
+    "answer": "-28 dBm"
+  },
+  {
+    "id": "core-003",
+    "question": "What is the Tx Power?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "1.3"}],
+    "answer": "+3 dBm"
+  },
+  {
+    "id": "core-004",
+    "question": "What wavelength does the ONU receiver use?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "1.2"}],
+    "answer": "1490 nm"
+  },
+  {
+    "id": "core-005",
+    "question": "How does the ONU connect to the OLT?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "1.4"}],
+    "answer": "Via optical fiber."
+  },
+  {
+    "id": "core-006",
+    "question": "What is the EPON upstream wavelength?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "3.1"}],
+    "answer": "1310 nm"
+  },
+  {
+    "id": "core-007",
+    "question": "What is the EPON downstream wavelength?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "3.1"}],
+    "answer": "1490 nm"
+  },
+  {
+    "id": "core-008",
+    "question": "What is the Rx Sensitivity for EPON ONU?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "3.1"}],
+    "answer": "-27 dBm"
+  },
+  {
+    "id": "core-009",
+    "question": "What is the Tx Wavelength?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "1.3"}],
+    "answer": "1310 nm"
+  },
+  {
+    "id": "core-010",
+    "question": "What is the Tx Extinction Ratio?",
+    "evidence": [{"document": "test_onu_manual.pdf", "version": "1.0", "page": 1, "section": "1.3"}],
+    "answer": "10 dB"
+  }
+]

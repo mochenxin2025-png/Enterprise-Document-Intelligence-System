@@ -1,0 +1,99 @@
+# EDIS — Engineering Document Intelligence System
+# Phase 1 Configuration
+
+phase: 1
+
+# ── Storage ──────────────────────────────────
+storage:
+  db_path: "./data/edis.db"
+  vector:
+    backend: sqlite-vec
+    dimension: 1024                  # BGE-M3 embedding dim
+
+# ── API Keys (read from environment) ─────────
+# DEEPSEEK_API_KEY, MINIMAX_API_KEY 已在 Hermes 环境中
+# 本配置通过 os.environ 读取，不存明文 Key
+
+api:
+  deepseek:
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
+  minimax:
+    base_url: https://api.minimax.chat/v1/text/chatcompletion_v2
+    model: abab6.5s-chat             # 视觉模型（支持图片输入）
+
+# ── Data Cleaning ────────────────────────────
+cleaning:
+  ocr:
+    engine: paddleocr                # paddleocr / tesseract
+    lang: [ch, en]                   # 中文 + 英文
+    post_process: llm                # llm / rule / none
+    llm_provider: deepseek
+    confidence_threshold: 0.7        # 低于此分数送 LLM 纠错
+  normalization:
+    encoding_detect: true
+    unicode_normalize: NFC
+    whitespace_clean: true
+  structure:
+    layout_engine: pymupdf
+    title_detection: heuristic       # heuristic / llm
+    max_depth: 4                     # Document → Chapter → Section → Chunk
+  table:
+    bordered: pymupdf                # pymupdf 内置表格提取
+    borderless: llm                  # llm / regex / skip
+  quality_gate:
+    enabled: true
+    min_confidence: 0.3              # 低于此 → unreadable
+    noisy_threshold: 0.6             # 低于此 → noisy
+
+# ── Ingestion ─────────────────────────────────
+ingestion:
+  chunk_size: 768      # 上调：工程手册段落较长，512 太碎
+  chunk_overlap: 128   # 上调：关键信息不跨 Chunk 断裂
+  supported_formats: [pdf, docx, md, html, csv, xlsx, png, jpg, tiff]
+
+# ── Embedding ─────────────────────────────────
+embedding:
+  backend: local                     # local / api
+  model: BAAI/bge-m3                 # 中英混合 SOTA
+  device: cpu                        # CPU inference, 12-core 够用
+  batch_size: 32
+
+# ── Retrieval ─────────────────────────────────
+retrieval:
+  top_k: 10
+  sufficiency:
+    relevance_threshold: 0.80
+    evidence_count_min: 3
+    diversity_weight: 0.3
+
+# ── LLM ───────────────────────────────────────
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  temperature: 0.3                   # 工程问答需要低温度
+  max_tokens: 2048
+
+# ── Vision ────────────────────────────────────
+vision:
+  provider: minimax
+  model: abab6.5s-chat
+  max_tokens: 4096
+
+# ── Citation ──────────────────────────────────
+citation:
+  format: "{document}, v{version}, Page {page}, Section {section}"
+  required_fields: [document, page, section]
+
+# ── Fallback ──────────────────────────────────
+fallback:
+  insufficient_evidence_message: "Insufficient evidence to answer this question."
+  max_retrieval_attempts: 3
+
+# ── Evaluation ────────────────────────────────
+evaluation:
+  core_dataset: "./evaluation/core_dataset.json"
+  daily_run: true
+  metrics:
+    retrieval: [recall@5, mrr, ndcg]
+    answer: [accuracy, faithfulness, citation_accuracy]

@@ -1,0 +1,11 @@
+.venv/
+data/models/
+data/edis.db*
+data/*.png
+__pycache__/
+*.pyc
+.env
+security.py
+retrieval/keyword_index.py
+tune_chunks.py
+data/tune.db
