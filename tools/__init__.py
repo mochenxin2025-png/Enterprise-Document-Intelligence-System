@@ -99,12 +99,14 @@ def tool_ingest(filepath: str, tenant_id: str = "default") -> dict:
     {})
 def tool_status() -> dict:
     from retrieval import VectorStore
+    from config.tenant import get_current_tenant
+    tenant_id = get_current_tenant()
     store = VectorStore()
     r = {
-        "documents": store.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0],
-        "chunks": store.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0],
-        "qa_pairs": store.conn.execute("SELECT COUNT(*) FROM qa_pairs").fetchone()[0],
-        "pending": store.conn.execute("SELECT COUNT(*) FROM unanswered_queue WHERE status='pending'").fetchone()[0],
+        "documents": store.conn.execute("SELECT COUNT(*) FROM documents WHERE tenant_id=?", (tenant_id,)).fetchone()[0],
+        "chunks": store.conn.execute("SELECT COUNT(*) FROM chunks WHERE tenant_id=?", (tenant_id,)).fetchone()[0],
+        "qa_pairs": store.conn.execute("SELECT COUNT(*) FROM qa_pairs WHERE tenant_id=?", (tenant_id,)).fetchone()[0],
+        "pending": store.conn.execute("SELECT COUNT(*) FROM unanswered_queue WHERE status='pending' AND tenant_id=?", (tenant_id,)).fetchone()[0],
     }
     store.close()
     return r
@@ -139,3 +141,14 @@ def tool_category(text: str) -> dict:
     cat = detect_category(text)
     return {"category": cat.category, "confidence": cat.confidence,
             "keywords": cat.matched_keywords}
+
+
+@ToolRegistry.register("audit", "查询审计日志（L5）",
+    {"limit": "int=20"})
+def tool_audit(limit: int = 20) -> list[dict]:
+    from audit import AuditLogger
+    from config.tenant import get_current_tenant
+    logger = AuditLogger()
+    rows = logger.query(tenant_id=get_current_tenant(), limit=limit)
+    logger.close()
+    return rows

@@ -137,16 +137,19 @@ mcp = MCPServer("edis", "1.0.0")
 # ── 注册 Tools ──────────────────────────────────
 
 @mcp.tool("edis_ask", "向工程文档知识库提问，返回基于 PDF 上下文的答案",
-          {"question": {"type": "string", "description": "要提问的问题"}})
-def tool_ask(question: str) -> str:
+          {"question": {"type": "string", "description": "要提问的问题"},
+           "user_id": {"type": "string", "description": "可选：当前用户 ID（用于审计和权限）"}})
+def tool_ask(question: str, user_id: str = "") -> str:
     from qa.engine import QAEngine
     engine = QAEngine()
-    result = engine.ask_v2(question)
+    user_ctx = {"user_id": user_id, "security_clearance": 3} if user_id else None
+    result = engine.ask_v2(question, user_context=user_ctx)
     return json.dumps({
         "answer": result["answer"],
         "confidence": result.get("confidence", 0),
         "intent": result.get("intent", "unknown"),
         "citations": result.get("citations", []),
+        "security_alerts": result.get("security_alerts", []),
     }, ensure_ascii=False)
 
 
@@ -173,12 +176,14 @@ def tool_search(query: str, top_k: int = 5) -> str:
           {})
 def tool_status() -> str:
     from retrieval import VectorStore
+    from config.tenant import get_current_tenant
+    tenant_id = get_current_tenant()
     store = VectorStore()
-    docs = store.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-    chunks = store.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    docs = store.conn.execute("SELECT COUNT(*) FROM documents WHERE tenant_id=?", (tenant_id,)).fetchone()[0]
+    chunks = store.conn.execute("SELECT COUNT(*) FROM chunks WHERE tenant_id=?", (tenant_id,)).fetchone()[0]
     emb = store.conn.execute("SELECT COUNT(*) FROM chunk_embeddings").fetchone()[0]
-    qa = store.conn.execute("SELECT COUNT(*) FROM qa_pairs").fetchone()[0]
-    queue = store.conn.execute("SELECT COUNT(*) FROM unanswered_queue WHERE status='pending'").fetchone()[0]
+    qa = store.conn.execute("SELECT COUNT(*) FROM qa_pairs WHERE tenant_id=?", (tenant_id,)).fetchone()[0]
+    queue = store.conn.execute("SELECT COUNT(*) FROM unanswered_queue WHERE status='pending' AND tenant_id=?", (tenant_id,)).fetchone()[0]
     store.close()
 
     return json.dumps({
@@ -188,6 +193,17 @@ def tool_status() -> str:
         "qa_pairs": qa,
         "pending_questions": queue,
     }, ensure_ascii=False)
+
+
+@mcp.tool("edis_audit", "查询审计日志",
+          {"limit": {"type": "integer", "description": "返回条数，默认 20"}})
+def tool_audit(limit: int = 20) -> str:
+    from audit import AuditLogger
+    from config.tenant import get_current_tenant
+    logger = AuditLogger()
+    rows = logger.query(tenant_id=get_current_tenant(), limit=limit)
+    logger.close()
+    return json.dumps(rows, ensure_ascii=False)
 
 
 @mcp.tool("edis_ingest", "导入 PDF 文档到知识库",

@@ -42,7 +42,7 @@ class UnansweredQueue:
 
     def enqueue(self, question: str, retrieval_context: str = "",
                 top_chunks: list[dict] = None, tenant_id: str = "default") -> str:
-        qid = hashlib.sha256(question.encode()).hexdigest()[:12]
+        qid = hashlib.sha256(f"{tenant_id}:{question}".encode()).hexdigest()[:12]
         now = time.time()
         existing = self.conn.execute(
             "SELECT id FROM unanswered_queue WHERE id = ? AND tenant_id = ? AND status = 'pending'",

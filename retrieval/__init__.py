@@ -20,6 +20,8 @@ class SearchResult:
     chapter: str = ""
     section: str = ""
     source: str = ""
+    security_level: int = 0
+    access_policy: str = ""
 
 
 class VectorStore:
@@ -41,6 +43,13 @@ class VectorStore:
                 id TEXT, tenant_id TEXT DEFAULT 'default',
                 filename TEXT, path TEXT,
                 page_count INTEGER, total_chars INTEGER, metadata TEXT,
+                role TEXT DEFAULT '',
+                department TEXT DEFAULT '',
+                project TEXT DEFAULT '',
+                user_whitelist TEXT DEFAULT '[]',
+                security_level INTEGER DEFAULT 1,
+                document_owner TEXT DEFAULT '',
+                access_policy TEXT DEFAULT 'open',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (id, tenant_id)
             )
@@ -51,6 +60,11 @@ class VectorStore:
                 tenant_id TEXT DEFAULT 'default',
                 document_id TEXT, chunk_index INTEGER, text TEXT,
                 page INTEGER, chapter TEXT, section TEXT, metadata TEXT,
+                role TEXT DEFAULT '',
+                department TEXT DEFAULT '',
+                project TEXT DEFAULT '',
+                security_level INTEGER DEFAULT 1,
+                access_policy TEXT DEFAULT 'open',
                 FOREIGN KEY (document_id) REFERENCES documents(id)
             )
         """)
@@ -60,24 +74,79 @@ class VectorStore:
         """)
         self.conn.commit()
 
+        # Schema migration for existing databases (ALTER TABLE, idempotent)
+        self._migrate_schema()
+
+    def _migrate_schema(self):
+        """Add permission columns to existing tables if missing (Phase 2 L2)."""
+        doc_cols = [
+            ("role", "TEXT DEFAULT ''"),
+            ("department", "TEXT DEFAULT ''"),
+            ("project", "TEXT DEFAULT ''"),
+            ("user_whitelist", "TEXT DEFAULT '[]'"),
+            ("security_level", "INTEGER DEFAULT 1"),
+            ("document_owner", "TEXT DEFAULT ''"),
+            ("access_policy", "TEXT DEFAULT 'open'"),
+        ]
+        chunk_cols = [
+            ("role", "TEXT DEFAULT ''"),
+            ("department", "TEXT DEFAULT ''"),
+            ("project", "TEXT DEFAULT ''"),
+            ("security_level", "INTEGER DEFAULT 1"),
+            ("access_policy", "TEXT DEFAULT 'open'"),
+        ]
+
+        for col, col_def in doc_cols:
+            try:
+                self.conn.execute(f"ALTER TABLE documents ADD COLUMN {col} {col_def}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        for col, col_def in chunk_cols:
+            try:
+                self.conn.execute(f"ALTER TABLE chunks ADD COLUMN {col} {col_def}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        # Indexes for tenant-scoped queries (avoid full table scan)
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_chunks_tenant ON chunks(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS idx_documents_tenant ON documents(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS idx_chunks_doc_tenant ON chunks(document_id, tenant_id)",
+        ]:
+            self.conn.execute(idx_sql)
+
+        self.conn.commit()
+
     def insert_document(self, doc_id, filename, path, page_count, total_chars, metadata,
-                        tenant_id: str = "default"):
+                        tenant_id: str = "default", permissions: dict = None):
         import json
+        p = permissions or {}
         self.conn.execute(
-            "INSERT OR REPLACE INTO documents (id, tenant_id, filename, path, page_count, total_chars, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (doc_id, tenant_id, filename, path, page_count, total_chars, json.dumps(metadata)),
+            "INSERT OR REPLACE INTO documents "
+            "(id, tenant_id, filename, path, page_count, total_chars, metadata, "
+            " role, department, project, user_whitelist, security_level, document_owner, access_policy) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (doc_id, tenant_id, filename, path, page_count, total_chars, json.dumps(metadata),
+             p.get("role", ""), p.get("department", ""), p.get("project", ""),
+             json.dumps(p.get("user_whitelist", [])),
+             p.get("security_level", 1), p.get("document_owner", ""),
+             p.get("access_policy", "open")),
         )
         self.conn.commit()
         return self.conn.execute("SELECT changes()").fetchone()[0]
 
     def insert_chunk(self, doc_id, chunk_index, text, page, chapter, section, metadata,
-                     tenant_id: str = "default"):
+                     tenant_id: str = "default", permissions: dict = None):
         import json
+        p = permissions or {}
         self.conn.execute(
-            "INSERT INTO chunks (tenant_id, document_id, chunk_index, text, page, chapter, section, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (tenant_id, doc_id, chunk_index, text, page, chapter, section, json.dumps(metadata)),
+            "INSERT INTO chunks (tenant_id, document_id, chunk_index, text, page, chapter, section, metadata, "
+            " role, department, project, security_level, access_policy) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (tenant_id, doc_id, chunk_index, text, page, chapter, section, json.dumps(metadata),
+             p.get("role", ""), p.get("department", ""), p.get("project", ""),
+             p.get("security_level", 1), p.get("access_policy", "open")),
         )
         self.conn.commit()
         return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -89,27 +158,51 @@ class VectorStore:
         )
         self.conn.commit()
 
-    def search(self, query_embedding, top_k=10):
+    def search(self, query_embedding, top_k=10, tenant_id: str = None,
+               user_context: dict = None):
+        """语义检索 — 在指定租户范围内召回，可选权限过滤。
+
+        user_context: {"user_id", "role", "department", "security_clearance", "project_ids"}
+        传入时自动构建权限 WHERE 子句（Filter First）。
+        """
+        if tenant_id is None:
+            from config.tenant import get_current_tenant
+            tenant_id = get_current_tenant()
+
         emb_bytes = np.array(query_embedding, dtype=np.float32).tobytes()
-        rows = self.conn.execute(
-            """
+
+        # 构建权限过滤
+        perm_where = ""
+        perm_params = []
+        if user_context:
+            from permissions import PermissionManager
+            perm_where, perm_params = PermissionManager.build_sql_filter(
+                user_context, table_alias="c")
+            perm_where = f"AND {perm_where}"
+
+        sql = f"""
             SELECT c.chunk_index, c.text, c.page, c.chapter, c.section, d.filename,
+                   c.security_level, c.access_policy,
                    vec_distance_L2(ce.embedding, ?) AS distance
             FROM chunk_embeddings ce
             JOIN chunks c ON ce.rowid = c.id
-            JOIN documents d ON c.document_id = d.id
+            JOIN documents d ON c.document_id = d.id AND c.tenant_id = d.tenant_id
+            WHERE c.tenant_id = ? {perm_where}
             ORDER BY distance ASC LIMIT ?
-            """,
-            (emb_bytes, top_k),
-        ).fetchall()
+        """
+        params = [emb_bytes, tenant_id] + perm_params + [top_k]
+        rows = self.conn.execute(sql, params).fetchall()
 
         results = []
         for row in rows:
-            chunk_idx, text, page, chapter, section, filename, distance = row
+            chunk_idx, text, page, chapter, section, filename, sec_level, acc_policy, distance = row
             score = max(0, 1.0 - distance / 100.0)
             results.append(SearchResult(
                 chunk_index=chunk_idx, text=text, score=round(score, 4),
-                page=page, chapter=chapter or "", section=section or "", source=filename or "",
+                page=page, chapter=chapter or "", section=section or "",
+                source=filename or "",
+                security_level=sec_level or 0,
+                access_policy=acc_policy or "",
             ))
         return results
 

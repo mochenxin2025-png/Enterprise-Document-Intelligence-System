@@ -40,12 +40,14 @@ class QARegistry:
                 PRIMARY KEY (id, tenant_id)
             )
         """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_qa_pairs_tenant ON qa_pairs(tenant_id)")
         self.conn.commit()
 
     def add(self, question: str, answer: str, tags: list[str] = None,
             source: str = "manual", created_by: str = "", tenant_id: str = "default") -> str:
         import json
-        qid = hashlib.sha256(question.encode()).hexdigest()[:12]
+        qid = hashlib.sha256(f"{tenant_id}:{question}".encode()).hexdigest()[:12]
         now = time.time()
         self.conn.execute(
             "INSERT OR REPLACE INTO qa_pairs (id, tenant_id, question, answer, tags, source, created_by, created_at) "
@@ -90,10 +92,15 @@ class QARegistry:
 
         return None
 
-    def list_all(self) -> list[dict]:
+    def list_all(self, tenant_id: str = None) -> list[dict]:
         import json
+        if tenant_id is None:
+            from config.tenant import get_current_tenant
+            tenant_id = get_current_tenant()
         rows = self.conn.execute(
-            "SELECT id, question, answer, tags, source, hit_count FROM qa_pairs ORDER BY hit_count DESC"
+            "SELECT id, question, answer, tags, source, hit_count FROM qa_pairs "
+            "WHERE tenant_id = ? ORDER BY hit_count DESC",
+            (tenant_id,),
         ).fetchall()
         return [{"id": r[0], "question": r[1], "answer": r[2][:80],
                 "tags": json.loads(r[3]), "hit_count": r[5]} for r in rows]
