@@ -206,6 +206,89 @@ class VectorStore:
             ))
         return results
 
+    def get_document_chunks(self, doc_filename: str, tenant_id: str,
+                            user_context: dict = None) -> list[SearchResult]:
+        """Parent Document Retrieval: 拉取文档的所有 chunk。
+
+        用于解决 Summary Chunk 占 Top1 导致真正答案排不上的问题。
+        """
+        # 构建权限过滤
+        perm_where = ""
+        perm_params = []
+        if user_context:
+            from permissions import PermissionManager
+            perm_where, perm_params = PermissionManager.build_sql_filter(
+                user_context, table_alias="c")
+            perm_where = f"AND {perm_where}"
+
+        rows = self.conn.execute(
+            f"SELECT c.chunk_index, c.text, c.page, c.chapter, c.section, "
+            f"d.filename, c.security_level, c.access_policy "
+            f"FROM chunks c JOIN documents d "
+            f"ON c.document_id = d.id AND c.tenant_id = d.tenant_id "
+            f"WHERE c.tenant_id = ? AND d.filename = ? {perm_where} "
+            f"ORDER BY c.page, c.chunk_index",
+            [tenant_id, doc_filename] + perm_params,
+        ).fetchall()
+
+        return [
+            SearchResult(
+                chunk_index=r[0], text=r[1], score=0.0, page=r[2],
+                chapter=r[3] or "", section=r[4] or "", source=r[5] or "",
+                security_level=r[6] or 0, access_policy=r[7] or "",
+            )
+            for r in rows
+        ]
+
+    def search_with_parent_retrieval(
+        self, query_embedding, top_k=10, tenant_id=None, user_context=None,
+        parent_top_n=3,
+    ) -> list[SearchResult]:
+        """Parent Document Retrieval — 解决 Chunk 孤岛。
+
+        1. TopK 语义检索
+        2. 取 Top N 个文档
+        3. 拉取这些文档的全部 chunk
+        4. 去重 + 按 page 排序返回
+        """
+        if tenant_id is None:
+            from config.tenant import get_current_tenant
+            tenant_id = get_current_tenant()
+
+        # Step 1: 语义检索
+        top_chunks = self.search(query_embedding, top_k=top_k,
+                                 tenant_id=tenant_id, user_context=user_context)
+
+        if not top_chunks:
+            return []
+
+        # Step 2: 找到 Top N 个唯一文档
+        seen_docs = []
+        unique_sources = []
+        for ch in top_chunks:
+            src = ch.source
+            if src and src not in seen_docs:
+                seen_docs.append(src)
+                unique_sources.append(src)
+                if len(unique_sources) >= parent_top_n:
+                    break
+
+        # Step 3: 拉取完整文档
+        all_chunks = []
+        seen_keys = set()
+        for src in unique_sources:
+            doc_chunks = self.get_document_chunks(
+                src, tenant_id, user_context)
+            for ch in doc_chunks:
+                key = (ch.source, ch.page, ch.chunk_index)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    all_chunks.append(ch)
+
+        # Step 4: 按 page 排序
+        all_chunks.sort(key=lambda c: (c.source or "", c.page, c.chunk_index))
+        return all_chunks
+
     def close(self):
         self.conn.close()
 

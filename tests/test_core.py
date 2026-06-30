@@ -751,3 +751,77 @@ class TestAuth:
         lp._conn.commit()
         lp.close()
         am.close()
+
+
+# ── Parent Document Retrieval + Reranker (P0) ─────
+
+class TestParentDocRetrieval:
+    """Parent Document Retrieval + Reranker"""
+
+    def test_get_document_chunks(self):
+        """拉取文档的全部 chunk"""
+        from retrieval import VectorStore
+        import numpy as np
+        store = VectorStore()
+        store.insert_document("pdr1", "pdr.pdf", "/f/pdr.pdf", 1, 100, {}, "tPDR")
+        c1 = store.insert_chunk("pdr1", 0, "第1段", 1, "", "", {}, "tPDR")
+        c2 = store.insert_chunk("pdr1", 1, "第2段", 2, "", "", {}, "tPDR")
+        emb = np.zeros(1024, dtype=np.float32).tolist()
+        store.insert_embedding(c1, emb)
+        store.insert_embedding(c2, emb)
+
+        chunks = store.get_document_chunks("pdr.pdf", "tPDR")
+        store.close()
+
+        assert len(chunks) == 2
+        assert chunks[0].page == 1
+        assert chunks[1].page == 2
+
+    def test_search_with_parent_retrieval(self):
+        """Parent Document Retrieval 拉取完整文档"""
+        from retrieval import VectorStore
+        import numpy as np
+        store = VectorStore()
+        store.insert_document("pdr2", "parent.pdf", "/f/parent.pdf", 2, 200, {}, "tPDR")
+        c1 = store.insert_chunk("pdr2", 0, "AAA摘要概述", 1, "", "", {}, "tPDR")
+        c2 = store.insert_chunk("pdr2", 1, "BBB详细参数MQTT配置步骤", 4, "", "", {}, "tPDR")
+        emb = np.zeros(1024, dtype=np.float32).tolist()
+        store.insert_embedding(c1, emb)
+        store.insert_embedding(c2, emb)
+
+        # Parent retrieval: 应该在 TopK 后拉取整个文档
+        results = store.search_with_parent_retrieval(
+            emb, top_k=2, tenant_id="tPDR", parent_top_n=1)
+        store.close()
+
+        # 应该返回文档的全部 2 个 chunk，不仅 TopK
+        assert len(results) == 2
+
+    def test_heuristic_reranker(self):
+        """启发式精排：关键词匹配的 chunk 排前面"""
+        from adapters.reranker import HeuristicReranker
+        reranker = HeuristicReranker()
+
+        query = "MQTT配置"
+        candidates = [
+            "摘要：本文档介绍网络协议概述",       # 不相关
+            "MQTT Broker配置步骤：首先设置端口",  # 相关
+            "HTTP协议使用80端口进行通信",          # 不相关
+            "MQTT QoS级别说明和TLS加密配置",      # 相关
+        ]
+        scores = [0.8, 0.6, 0.5, 0.7]
+        pages = [1, 3, 2, 5]
+
+        order = reranker.rerank(query, candidates, scores, pages)
+
+        # 关键词匹配的应该排前面
+        assert order[0] in (1, 3), f"Expected keyword match first, got {order[0]}"
+        # 不相关的排后面
+        assert order[-1] in (0, 2), f"Expected irrelevant last, got {order[-1]}"
+
+    def test_heuristic_reranker_empty(self):
+        """空输入不崩溃"""
+        from adapters.reranker import HeuristicReranker
+        reranker = HeuristicReranker()
+        assert reranker.rerank("q", []) == []
+        assert reranker.rerank("q", ["only one"]) == [0]

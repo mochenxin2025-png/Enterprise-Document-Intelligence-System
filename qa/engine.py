@@ -1,14 +1,15 @@
 """QA Engine v3 — 基于 Interface Layer，所有依赖可替换
 
-v3.1: 集成 L4 生成前校验 + L5 审计日志
+v3.2: 集成 Parent Document Retrieval + Reranker
 """
 
 import time
 from typing import Optional
 
-from interfaces import LLMInterface, EmbeddingInterface
+from interfaces import LLMInterface, EmbeddingInterface, RerankerInterface
 from retrieval import VectorStore
 from adapters import DeepSeekAdapter, BGEEmbedder
+from adapters.reranker import HeuristicReranker
 from planner import IntentClassifier, plan_retrieval
 from fusion import deduplicate, detect_conflicts, rank_results
 from qa_pairs import QARegistry
@@ -20,7 +21,7 @@ from verifier import PermissionVerifier
 
 
 class QAEngine:
-    """基于接口的问答引擎 — 完整企业级 RAG 五层架构"""
+    """基于接口的问答引擎 — 完整企业级 RAG"""
 
     def __init__(self,
                  llm: LLMInterface = None,
@@ -35,11 +36,12 @@ class QAEngine:
         self.planner = IntentClassifier()
         self.qa_registry = QARegistry(db_path)
         self.unanswered = UnansweredQueue(db_path)
-        self.audit = AuditLogger(db_path)           # L5: 审计日志
+        self.audit = AuditLogger(db_path)
+        self.reranker: RerankerInterface = HeuristicReranker()
         self.tenant_id = tenant_id or get_current_tenant()
 
     def ask(self, question: str, top_k: int = 10) -> dict:
-        """Phase 1: 单路检索 → LLM"""
+        """Phase 1: 单路检索 -> LLM"""
         results = self._retrieve(question, top_k)
         if not results:
             return self._no_answer()
@@ -51,10 +53,7 @@ class QAEngine:
 
     def ask_v2(self, question: str, top_k: int = 10,
                user_context: dict = None) -> dict:
-        """Phase 2+: QA Pair → Intent → Progressive → L4 Verify → L5 Audit
-
-        user_context: {"user_id", "role", "department", "security_clearance"}
-        """
+        """v3.2: QA Pair -> Intent -> ParentDoc -> Rerank -> L4 Verify -> L5 Audit"""
         t_start = time.time()
         user_ctx = user_context or {}
         security_alerts = []
@@ -69,12 +68,30 @@ class QAEngine:
             self._audit_log(question, result, user_ctx, t_start, security_alerts, True)
             return result
 
-        # Intent + 渐进式检索 (with user_context for permission filtering)
+        # Intent + Parent Document Retrieval + Rerank
         plan = plan_retrieval(question, self.planner)
-        results = self._retrieve(question, top_k * 2, user_ctx)
+        embedding = self.embedder.encode_query(question)
+
+        # Parent Document Retrieval: 解决 Chunk 孤岛
+        results = self.store.search_with_parent_retrieval(
+            embedding, top_k=top_k, user_context=user_ctx, parent_top_n=3)
+        if not results:
+            results = self._retrieve(question, top_k * 2, user_ctx)
+
         sufficiency = self._check_sufficiency(results)
         if not sufficiency["sufficient"]:
             results.extend(self._retrieve(question, top_k, user_ctx))
+
+        # Reranker: 精排候选
+        if len(results) > 5:
+            texts = [r.text for r in results]
+            scores = [r.score for r in results]
+            pages = [r.page for r in results]
+            try:
+                new_order = self.reranker.rerank(question, texts, scores, pages)
+                results = [results[i] for i in new_order if i < len(results)]
+            except Exception:
+                pass
 
         fused = rank_results(results)
         conflicts = detect_conflicts(results)
@@ -92,12 +109,9 @@ class QAEngine:
                                                     db_conn=self.store.conn)
             if not vresult.passed:
                 security_alerts.extend(vresult.alerts)
-                print(f"[L4] Permission verify: {vresult.rejected_chunks}/{vresult.total_chunks} rejected")
 
         ctx = self._build_context(fused, conflicts)
         answer = self._generate(question, ctx, plan.primary_intent).content
-
-        # L5: 输出脱敏
         answer = self._sanitize_output(answer)
 
         confidence = self._estimate_confidence(fused, conflicts)
@@ -110,10 +124,8 @@ class QAEngine:
                   "intent": plan.primary_intent,
                   "security_alerts": security_alerts if security_alerts else []}
 
-        # L5: 审计日志
         self._audit_log(question, result, user_ctx, t_start, security_alerts,
                         len(security_alerts) == 0)
-
         return result
 
     def _retrieve(self, question, top_k, user_context=None):
@@ -175,7 +187,6 @@ class QAEngine:
 
     def _audit_log(self, question, result, user_ctx, t_start,
                    security_alerts, verified):
-        """L5: 写入审计日志"""
         try:
             entry = AuditEntry(
                 user_id=user_ctx.get("user_id", ""),
@@ -196,19 +207,14 @@ class QAEngine:
             )
             self.audit.log(entry)
         except Exception:
-            pass  # 审计失败不阻断主流程
+            pass
 
     @staticmethod
     def _sanitize_output(text: str) -> str:
-        """L5: 输出脱敏 — 移除可能泄露的敏感模式"""
         import re
-        # 身份证号 (15 or 18 digits)
         text = re.sub(r'(?<!\d)\d{15}(?:\d{2}[0-9Xx])?(?!\d)', '[ID_REDACTED]', text)
-        # 手机号 (11 digits, starts with 1)
         text = re.sub(r'(?<!\d)1[3-9]\d{9}(?!\d)', '[PHONE_REDACTED]', text)
-        # 邮箱
         text = re.sub(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}',
                       '[EMAIL_REDACTED]', text)
-        # IP 地址
         text = re.sub(r'(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)', '[IP_REDACTED]', text)
         return text
