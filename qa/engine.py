@@ -1,6 +1,6 @@
 """QA Engine v3 — 基于 Interface Layer，所有依赖可替换
 
-v3.2: 集成 Parent Document Retrieval + Reranker
+v4.0: Query Rewrite + Hybrid + Bad Case + 文档版本管理
 """
 
 import time
@@ -18,6 +18,8 @@ from context_builder import ContextBuilder
 from config.tenant import get_current_tenant
 from audit import AuditLogger, AuditEntry
 from verifier import PermissionVerifier
+from query_rewrite import QueryRewriteService
+from evaluation.bad_case_db import BadCaseDB
 
 
 class QAEngine:
@@ -38,6 +40,8 @@ class QAEngine:
         self.unanswered = UnansweredQueue(db_path)
         self.audit = AuditLogger(db_path)
         self.reranker: RerankerInterface = HeuristicReranker()
+        self.query_rewriter = QueryRewriteService()
+        self.bad_cases = BadCaseDB(db_path)
         self.tenant_id = tenant_id or get_current_tenant()
 
     def ask(self, question: str, top_k: int = 10) -> dict:
@@ -57,6 +61,12 @@ class QAEngine:
         t_start = time.time()
         user_ctx = user_context or {}
         security_alerts = []
+
+        # Query Rewrite: 多轮对话指代消解
+        original_question = question
+        question = self.query_rewriter.rewrite(question)
+        if question != original_question:
+            print(f"[rewrite] {original_question} -> {question}")
 
         # QA Pair 优先
         qa_match = self.qa_registry.search(question, tenant_id=self.tenant_id)
@@ -126,6 +136,21 @@ class QAEngine:
 
         self._audit_log(question, result, user_ctx, t_start, security_alerts,
                         len(security_alerts) == 0)
+
+        # Bad Case recording for low-confidence answers
+        if result.get("confidence", 0) < 0.5:
+            self.bad_cases.record(
+                question=question,
+                answer=result.get("answer", ""),
+                failure_type="low_confidence",
+                confidence=result.get("confidence", 0),
+                tenant_id=self.tenant_id,
+                user_id=user_ctx.get("user_id", ""),
+            )
+
+        # Update query history
+        self.query_rewriter.add_to_history(original_question)
+
         return result
 
     def ask_v3(self, question: str, top_k: int = 10,
@@ -208,6 +233,21 @@ class QAEngine:
 
         self._audit_log(question, result, user_ctx, t_start, security_alerts,
                         len(security_alerts) == 0)
+
+        # Bad Case recording for low-confidence answers
+        if result.get("confidence", 0) < 0.5:
+            self.bad_cases.record(
+                question=question,
+                answer=result.get("answer", ""),
+                failure_type="low_confidence",
+                confidence=result.get("confidence", 0),
+                tenant_id=self.tenant_id,
+                user_id=user_ctx.get("user_id", ""),
+            )
+
+        # Update query history
+        self.query_rewriter.add_to_history(original_question)
+
         return result
 
     @staticmethod
@@ -336,6 +376,12 @@ class QAEngine:
         user_ctx = user_context or {}
         security_alerts = []
 
+        # Query Rewrite: 多轮对话指代消解
+        original_question = question
+        question = self.query_rewriter.rewrite(question)
+        if question != original_question:
+            print(f"[rewrite] {original_question} -> {question}")
+
         # QA Pair 优先
         qa_match = self.qa_registry.search(question, tenant_id=self.tenant_id)
         if qa_match:
@@ -404,4 +450,19 @@ class QAEngine:
 
         self._audit_log(question, result, user_ctx, t_start, security_alerts,
                         len(security_alerts) == 0)
+
+        # Bad Case recording for low-confidence answers
+        if result.get("confidence", 0) < 0.5:
+            self.bad_cases.record(
+                question=question,
+                answer=result.get("answer", ""),
+                failure_type="low_confidence",
+                confidence=result.get("confidence", 0),
+                tenant_id=self.tenant_id,
+                user_id=user_ctx.get("user_id", ""),
+            )
+
+        # Update query history
+        self.query_rewriter.add_to_history(original_question)
+
         return result
