@@ -128,6 +128,107 @@ class QAEngine:
                         len(security_alerts) == 0)
         return result
 
+    def ask_v3(self, question: str, top_k: int = 10,
+               user_context: dict = None) -> dict:
+        """v3.3: 模态感知 — 判断问题偏向文本/表格/图示，加权检索
+
+        Modality Affinity: 先判断用户问题更偏向哪种证据类型，
+        然后调整检索权重和证据融合策略。
+        """
+        t_start = time.time()
+        user_ctx = user_context or {}
+        security_alerts = []
+
+        qa_match = self.qa_registry.search(question, tenant_id=self.tenant_id)
+        if qa_match:
+            result = {"answer": qa_match.answer, "confidence": 0.99,
+                      "citations": [{"document": "QA Pair", "page": 0, "relevance": 1.0}],
+                      "evidence_count": 1, "intent": "qa_pair_match",
+                      "modality": "text"}
+            self._audit_log(question, result, user_ctx, t_start, security_alerts, True)
+            return result
+
+        # Modality Affinity — 判断问题偏向哪种证据
+        modality = self._classify_modality(question)
+        plan = plan_retrieval(question, self.planner)
+        embedding = self.embedder.encode_query(question)
+
+        # 根据模态调整检索策略
+        results = self.store.search_with_parent_retrieval(
+            embedding, top_k=top_k, user_context=user_ctx, parent_top_n=3)
+        if not results:
+            results = self._retrieve(question, top_k * 2, user_ctx)
+
+        sufficiency = self._check_sufficiency(results)
+        if not sufficiency["sufficient"]:
+            results.extend(self._retrieve(question, top_k, user_ctx))
+
+        if len(results) > 5:
+            texts = [r.text for r in results]
+            scores = [r.score for r in results]
+            pages = [r.page for r in results]
+            try:
+                new_order = self.reranker.rerank(question, texts, scores, pages)
+                results = [results[i] for i in new_order if i < len(results)]
+            except Exception:
+                pass
+
+        fused = rank_results(results)
+        conflicts = detect_conflicts(results)
+        if not fused:
+            self.unanswered.enqueue(question, results[0].text if results else "",
+                                    tenant_id=self.tenant_id)
+            result = self._no_answer()
+            result["modality"] = modality
+            self._audit_log(question, result, user_ctx, t_start, security_alerts, False)
+            return result
+
+        if user_ctx:
+            verifier = PermissionVerifier()
+            vresult, fused = verifier.verify_batch(fused, user_ctx, self.tenant_id,
+                                                    db_conn=self.store.conn)
+            if not vresult.passed:
+                security_alerts.extend(vresult.alerts)
+
+        # 根据模态调整 prompt
+        intent = f"{plan.primary_intent}_{modality}" if modality != "text" else plan.primary_intent
+        ctx = self._build_context(fused, conflicts)
+        answer = self._generate(question, ctx, intent).content
+        answer = self._sanitize_output(answer)
+
+        confidence = self._estimate_confidence(fused, conflicts)
+        if confidence < 0.3:
+            self.unanswered.enqueue(question, ctx[:500], tenant_id=self.tenant_id)
+
+        result = {"answer": answer, "confidence": confidence,
+                  "citations": self._extract_citations(fused),
+                  "evidence_count": len(fused), "sufficiency": sufficiency,
+                  "intent": plan.primary_intent, "modality": modality,
+                  "security_alerts": security_alerts if security_alerts else []}
+
+        self._audit_log(question, result, user_ctx, t_start, security_alerts,
+                        len(security_alerts) == 0)
+        return result
+
+    @staticmethod
+    def _classify_modality(question: str) -> str:
+        """判断问题偏向哪种证据类型"""
+        q = question.lower()
+
+        table_keywords = ['表格', '对照表', '列表', '费用标准', '价格',
+                         '尺寸表', '参数表', '规格表', '汇总表']
+        diagram_keywords = ['流程图', '架构图', '拓扑图', '示意图', '结构图',
+                           '框图', '关系图', '怎么连接', '如何连接']
+        figure_keywords = ['图片', '照片', '截图', '图示', '如图所示']
+
+        if any(kw in q for kw in table_keywords):
+            return "table"
+        if any(kw in q for kw in diagram_keywords):
+            return "diagram"
+        if any(kw in q for kw in figure_keywords):
+            return "figure"
+        return "text"
+
     def _retrieve(self, question, top_k, user_context=None):
         embedding = self.embedder.encode_query(question)
         return self.store.search(embedding, top_k=top_k, user_context=user_context)
