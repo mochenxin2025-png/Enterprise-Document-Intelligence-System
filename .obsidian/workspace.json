@@ -185,8 +185,8 @@
   },
   "active": "ea6bf99c35d37193",
   "lastOpenFiles": [
-    "data/edis.db-shm",
     "data/edis.db-wal",
+    "data/edis.db-shm",
     "knowledge_objects/__pycache__/__init__.cpython-311.pyc",
     "knowledge_objects/__pycache__",
     "multimodal/__pycache__/__init__.cpython-311.pyc",

@@ -1,132 +1,95 @@
-"""Agent Adapters — 不同 Agent 类型的调用适配
+"""Agent Adapter Layer — 不同 Agent 类型通过不同适配器接入 EDIS
 
-Chat / Coding / Batch / Workflow 四种 Agent 通过不同工具集和调度方式接入。
+Chat Agent:    文档问答、检索式对话（ChatGPT, Claude, Gemini）
+Coding Agent:  批量处理、仓库改造（Cursor, Codex, OpenHands）
+Batch Agent:   批量问答、自动质检
+Workflow Agent:审批流程、工单系统
 """
 
-from dataclasses import dataclass, field
-from typing import Optional
-from agent import AgentToolRegistry, ToolResult
+from . import AgentToolRegistry
+from .http_server import run_server
 
 
-@dataclass
-class AgentContext:
-    """Agent 调用上下文"""
-    agent_id: str
-    agent_type: str          # "chat" | "coding" | "batch" | "workflow"
-    user_id: str = ""
-    tenant_id: str = "default"
-    run_id: str = ""
+class AgentAdapter:
+    """适配器基类"""
+
+    def __init__(self, base_url: str = "http://127.0.0.1:8765"):
+        self.base_url = base_url
+
+    def call_tool(self, name: str, params: dict) -> dict:
+        """调用工具（默认通过 HTTP，子类可 override）"""
+        import urllib.request, json
+
+        data = json.dumps({"name": name, "params": params}).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/tools/call",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        resp = urllib.request.urlopen(req)
+        return json.loads(resp.read())
 
 
-# ── Chat Agent Adapter ──────────────────────────
+class ChatAgentAdapter(AgentAdapter):
+    """对话型 Agent 适配器 — 文档问答、检索式对话
 
-class ChatAgentAdapter:
-    """Chat Agent: 文档问答、检索式对话、总结解释
-
-    适合 ChatGPT / Claude / Gemini 等对话型 Agent。
+    适用于: ChatGPT, Claude, Gemini
     """
 
-    AVAILABLE_TOOLS = [
-        "answer_question", "search_knowledge",
-        "compare_evidence", "get_document_metadata", "system_status",
-    ]
+    def ask(self, question: str, user_id: str = "") -> dict:
+        return self.call_tool("answer_question", {
+            "question": question, "user_id": user_id,
+        })
 
-    @staticmethod
-    def run(tool_name: str, ctx: AgentContext, **params) -> ToolResult:
-        if tool_name not in ChatAgentAdapter.AVAILABLE_TOOLS:
-            return ToolResult.fail("FORBIDDEN",
-                f"Tool '{tool_name}' not available for chat agent")
-        return AgentToolRegistry.run(tool_name, **params)
-
-    @staticmethod
-    def list_tools() -> list[str]:
-        return ChatAgentAdapter.AVAILABLE_TOOLS
+    def search(self, query: str, top_k: int = 5) -> dict:
+        return self.call_tool("search_knowledge", {
+            "query": query, "top_k": top_k,
+        })
 
 
-# ── Coding Agent Adapter ────────────────────────
+class CodingAgentAdapter(AgentAdapter):
+    """编程型 Agent 适配器 — 批量处理文件、修改配置
 
-class CodingAgentAdapter:
-    """Coding Agent: 批量处理文件、修改配置、自动生成
-
-    适合 Cursor / Codex / OpenHands 等编码型 Agent。
+    适用于: Cursor, Codex, OpenHands
     """
 
-    AVAILABLE_TOOLS = [
-        "ingest_document", "search_knowledge",
-        "get_document_metadata", "system_status",
-    ]
+    def ingest(self, filepath: str, tenant_id: str = "default") -> dict:
+        return self.call_tool("ingest_document", {
+            "filepath": filepath, "tenant_id": tenant_id,
+        })
 
-    @staticmethod
-    def run(tool_name: str, ctx: AgentContext, **params) -> ToolResult:
-        if tool_name not in CodingAgentAdapter.AVAILABLE_TOOLS:
-            return ToolResult.fail("FORBIDDEN",
-                f"Tool '{tool_name}' not available for coding agent")
-        return AgentToolRegistry.run(tool_name, **params)
-
-    @staticmethod
-    def list_tools() -> list[str]:
-        return CodingAgentAdapter.AVAILABLE_TOOLS
+    def get_metadata(self, filename: str) -> dict:
+        return self.call_tool("get_document_metadata", {
+            "filename": filename,
+        })
 
 
-# ── Batch QA Agent Adapter ──────────────────────
+class BatchAgentAdapter(AgentAdapter):
+    """批量 Agent 适配器 — 批量问答、自动质检"""
 
-class BatchAgentAdapter:
-    """Batch Agent: 批量问答、质检、审阅
+    def ask_batch(self, questions: list[str], user_id: str = "") -> list[dict]:
+        results = []
+        for q in questions:
+            r = self.call_tool("answer_question", {
+                "question": q, "user_id": user_id,
+            })
+            results.append(r)
+        return results
 
-    适合需要批量处理大量问题的场景。
-    """
-
-    AVAILABLE_TOOLS = [
-        "answer_question", "search_knowledge",
-        "compare_evidence", "get_document_metadata",
-    ]
-
-    @staticmethod
-    def run(tool_name: str, ctx: AgentContext, **params) -> ToolResult:
-        if tool_name not in BatchAgentAdapter.AVAILABLE_TOOLS:
-            return ToolResult.fail("FORBIDDEN",
-                f"Tool '{tool_name}' not available for batch agent")
-        return AgentToolRegistry.run(tool_name, **params)
-
-    @staticmethod
-    def list_tools() -> list[str]:
-        return BatchAgentAdapter.AVAILABLE_TOOLS
+    def search_batch(self, queries: list[str], top_k: int = 5) -> list[dict]:
+        results = []
+        for q in queries:
+            r = self.call_tool("search_knowledge", {
+                "query": q, "top_k": top_k,
+            })
+            results.append(r)
+        return results
 
 
-# ── Workflow Agent Adapter ──────────────────────
+class WorkflowAgentAdapter(AgentAdapter):
+    """工作流 Agent 适配器 — 审批流程、企业知识工作流"""
 
-class WorkflowAgentAdapter:
-    """Workflow Agent: 审批流程、企业知识工单
-
-    适合需要多步骤审批场景。
-    """
-
-    AVAILABLE_TOOLS = [
-        "answer_question", "search_knowledge",
-        "compare_evidence", "get_document_metadata",
-        "ingest_document", "system_status",
-    ]
-
-    @staticmethod
-    def run(tool_name: str, ctx: AgentContext, **params) -> ToolResult:
-        if tool_name not in WorkflowAgentAdapter.AVAILABLE_TOOLS:
-            return ToolResult.fail("FORBIDDEN",
-                f"Tool '{tool_name}' not available for workflow agent")
-        return AgentToolRegistry.run(tool_name, **params)
-
-    @staticmethod
-    def list_tools() -> list[str]:
-        return WorkflowAgentAdapter.AVAILABLE_TOOLS
-
-
-# ── Adapter Registry ────────────────────────────
-
-def get_adapter(agent_type: str):
-    """根据 Agent 类型获取对应适配器"""
-    adapters = {
-        "chat": ChatAgentAdapter,
-        "coding": CodingAgentAdapter,
-        "batch": BatchAgentAdapter,
-        "workflow": WorkflowAgentAdapter,
-    }
-    return adapters.get(agent_type)
+    def compare(self, entity_a: str, entity_b: str) -> dict:
+        return self.call_tool("compare_evidence", {
+            "entity_a": entity_a, "entity_b": entity_b,
+        })

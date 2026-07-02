@@ -1,92 +1,78 @@
-"""HTTP Tool Server — 通过 HTTP API 暴露 EDIS 工具
+"""HTTP Tool Server — 最小 HTTP API，暴露 AgentToolRegistry
 
-最小实现，零外部依赖（仅 Python 标准库 http.server）。
-生产环境可替换为 FastAPI / Flask。
-
-端点:
-  POST /tools/{name}  — 调用指定工具
-  GET  /tools          — 列出所有工具
-  GET  /health         — 健康检查
+启动: python -m agent.http_server --port 8765
+调用: curl -X POST http://localhost:8765/tools/call -d '{"name":"answer_question","params":{"question":"hello"}}'
 """
-
 import json
 import sys
-from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from . import AgentToolRegistry
 
 
-class ToolHTTPHandler(BaseHTTPRequestHandler):
-    """HTTP 请求处理 — 路由到 AgentToolRegistry"""
+class ToolHandler(BaseHTTPRequestHandler):
+    """处理 /tools/* 路由"""
 
-    def do_GET(self):
-        path = urlparse(self.path).path
-
-        if path == "/health":
-            self._json(200, {"ok": True, "data": "EDIS Agent API v1"})
-
-        elif path == "/tools":
-            from agent import AgentToolRegistry
-            self._json(200, AgentToolRegistry.list_all())
-
-        else:
-            self._json(404, {"ok": False, "error": {"code": "NOT_FOUND"}})
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-
-        # /tools/{name}
-        if path.startswith("/tools/"):
-            tool_name = path.split("/tools/")[1]
-            if not tool_name:
-                self._json(400, {"ok": False, "error": {"code": "BAD_REQUEST",
-                                "message": "Missing tool name"}})
-                return
-
-            # Read body
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length) if length else b"{}"
-            try:
-                params = json.loads(body)
-            except json.JSONDecodeError:
-                self._json(400, {"ok": False, "error": {"code": "INVALID_JSON"}})
-                return
-
-            from agent import AgentToolRegistry
-            result = AgentToolRegistry.run(tool_name, **params)
-            status = 200 if result.ok else 400
-            self._json(status, result.to_dict())
-
-        else:
-            self._json(404, {"ok": False, "error": {"code": "NOT_FOUND"}})
-
-    def _json(self, status: int, data):
+    def _send_json(self, data: dict, status: int = 200):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode())
-        self.wfile.flush()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/tools/list":
+            tools = AgentToolRegistry.list_tools()
+            self._send_json({"ok": True, "data": tools})
+        elif self.path == "/health":
+            self._send_json({"ok": True, "data": {"status": "ok"}})
+        else:
+            self._send_json(
+                {"ok": False, "error": {"code": "NOT_FOUND", "message": self.path}},
+                status=404,
+            )
+
+    def do_POST(self):
+        if self.path == "/tools/call":
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length)
+                req = json.loads(body)
+
+                name = req.get("name", "")
+                params = req.get("params", {})
+
+                result = AgentToolRegistry.call(name, params)
+                self._send_json(
+                    result.to_dict(),
+                    status=200 if result.ok else 400,
+                )
+            except json.JSONDecodeError:
+                self._send_json(
+                    {"ok": False, "error": {"code": "INVALID_JSON"}}, status=400)
+        else:
+            self._send_json(
+                {"ok": False, "error": {"code": "NOT_FOUND"}}, status=404)
 
     def log_message(self, format, *args):
-        """Suppress default logging — use structured output instead"""
+        """Suppress default HTTP logging"""
         pass
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8765):
     """启动 HTTP Tool Server"""
-    server = HTTPServer((host, port), ToolHTTPHandler)
-    print(f"EDIS Agent API: http://{host}:{port}")
-    print(f"  Tools: GET  http://{host}:{port}/tools")
-    print(f"  Call:  POST http://{host}:{port}/tools/{{name}}")
-    print(f"  Health: GET http://{host}:{port}/health")
+    server = HTTPServer((host, port), ToolHandler)
+    print(f"EDIS Agent HTTP Server: http://{host}:{port}")
+    print(f"  Tools: GET  http://{host}:{port}/tools/list")
+    print(f"  Call:  POST http://{host}:{port}/tools/call")
+    print(f"  Health: GET  http://{host}:{port}/health")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        print("\nShutting down...")
         server.shutdown()
-        print("\nServer stopped.")
 
 
 if __name__ == "__main__":
-    run_server()
+    port = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[1] == "--port" else 8765
+    run_server(port=port)
