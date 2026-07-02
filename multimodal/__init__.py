@@ -1,327 +1,245 @@
-"""Multimodal Layer — page classifier, modality router, interpreters, vision adapter
+"""Multimodal Processing — 页面分类、模态路由、视觉理解
 
-从"所有内容尽量转文本"升级为"按内容类型选择最佳处理链"。
+核心:
+  - PageClassifier: 判断页面属于 text/table/figure/diagram/ocr
+  - ModalityRouter: 根据分类结果选择处理链
+  - VisionAdapter: 统一视觉模型调用接口
 """
-
 import re
 from dataclasses import dataclass
 from typing import Optional
-from knowledge_objects import (
-    KnowledgeObject, TextBlock, TableBlock, FigureBlock,
-    DiagramBlock, OCRRegion, create_knowledge_object,
-)
 
 
-# ── Page Classifier ─────────────────────────────
-
-@dataclass
-class PageClassification:
-    """页面分类结果"""
-    page_num: int
-    modality: str           # "text" | "table" | "figure" | "diagram" | "ocr"
-    confidence: float
-    text_density: float     # 文字覆盖率 0-1
-    table_ratio: float      # 表格结构占比 0-1
-    figure_ratio: float     # 图片区域占比 0-1
-    has_diagram_elements: bool  # 是否有箭头/框线/连接线
-
+# ── Page Classifier ──────────────────────────────
 
 class PageClassifier:
-    """页面模态分类器 — 判断页面属于哪种类型"""
+    """判断页面模态类型
 
-    def classify(self, page_num: int, text: str,
-                 blocks: list[dict] = None,
-                 images: list[dict] = None) -> PageClassification:
-        """根据页面内容判断模态类型"""
-        blocks = blocks or []
-        images = images or []
+    规则（无 LLM 依赖，纯启发式）:
+      - 文字密度 > 50% → text
+      - 表格行占比 > 20% → table
+      - 图片占比 > 30%、文字少 → figure
+      - OCR 置信度低 → ocr
+    """
 
-        # 文字密度
-        total_chars = len(text)
-        text_density = min(1.0, total_chars / 2000)  # 2000 chars = full text page
+    TEXT_DENSITY_MIN = 0.3      # 文字占比下限（低于此可能是图片页）
+    TABLE_ROW_RATIO = 0.2       # 表格行占比
+    IMAGE_AREA_RATIO = 0.3      # 图片面积占比
 
-        # 表格占比（检测 | 分隔符，网格对齐的文本）
-        table_lines = len(re.findall(r'\|.+\|', text))
-        table_ratio = min(1.0, table_lines / max(1, len(text.split('\n'))))
+    @classmethod
+    def classify(cls, page_text: str, has_images: bool = False,
+                  image_count: int = 0, ocr_confidence: float = 1.0,
+                  table_rows: int = 0, total_lines: int = 0) -> str:
+        """返回: text | table | figure | diagram | ocr"""
+        lines = [l for l in page_text.split("\n") if l.strip()]
+        total = max(len(lines), 1)
 
-        # 图片占比
-        figure_ratio = min(1.0, len(images) / 3) if images else 0.0
+        # OCR 低置信度 → ocr route
+        if ocr_confidence < 0.6:
+            return "ocr"
 
-        # 图示检测（箭头、框线关键词）
-        diagram_keywords = ['流程图', '架构', '拓扑', '箭头', '→', '↓', '框图',
-                           'flowchart', 'diagram', 'architecture']
-        has_diagram = any(kw in text.lower() for kw in diagram_keywords)
+        # 表格特征
+        if table_rows > 0 and table_rows / max(total, 1) > cls.TABLE_ROW_RATIO:
+            # 检测是否有图示特征（箭头、框线字符）
+            if cls._has_diagram_chars(page_text):
+                return "diagram"
+            return "table"
 
-        # 路由决策
-        if table_ratio > 0.15:
-            modality = "table"
-            confidence = table_ratio
-        elif figure_ratio > 0.3 and has_diagram:
-            modality = "diagram"
-            confidence = 0.7
-        elif figure_ratio > 0.3:
-            modality = "figure"
-            confidence = figure_ratio
-        elif text_density < 0.05:
-            modality = "ocr"
-            confidence = 0.5
-        else:
-            modality = "text"
-            confidence = text_density
+        # 图片多、文字少 → figure
+        if has_images and image_count > 0:
+            text_chars = sum(1 for c in page_text if c.isalnum() or '\u4e00' <= c <= '\u9fff')
+            text_len = max(len(page_text), 1)
+            if text_len < 50 or text_chars / text_len < cls.TEXT_DENSITY_MIN:
+                return "figure"
 
-        return PageClassification(
-            page_num=page_num, modality=modality,
-            confidence=min(confidence, 1.0),
-            text_density=text_density, table_ratio=table_ratio,
-            figure_ratio=figure_ratio, has_diagram_elements=has_diagram,
-        )
+        # 默认 → text
+        return "text"
+
+    @staticmethod
+    def _has_diagram_chars(text: str) -> bool:
+        """检测流程图的字符特征: ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ → ← ↑ ↓"""
+        diagram_chars = set("─│┌┐└┘├┤┬┴┼→←↑↓▸▪◆○●□■△▲")
+        count = sum(1 for c in text if c in diagram_chars)
+        return count > 5
 
 
-# ── Modality Router ─────────────────────────────
+# ── Modality Router ──────────────────────────────
+
+@dataclass
+class ModalityRoute:
+    """模态路由结果"""
+    modality: str               # text | table | figure | diagram | ocr
+    confidence: float
+    reason: str = ""
+
 
 class ModalityRouter:
-    """模态路由器 — 按页面类型走不同处理链
+    """模态路由器 — 决定页面走哪条处理链
 
-    输入: 页面内容
-    输出: KnowledgeObject 列表（TextBlock/TableBlock/FigureBlock/...）
+    text route:     → 直接文本提取 → chunk → embed
+    table route:    → 表格解析 → TableBlock → 结构化存储
+    figure route:   → 保留原图 → 可选 vision 描述 → FigureBlock
+    diagram route:  → OCR 标签 + 结构抽取 → DiagramBlock
+    ocr route:      → OCR → 后处理 → OCRRegion
     """
 
     def __init__(self):
         self.classifier = PageClassifier()
 
-    def route_page(self, page_num: int, text: str,
-                   blocks: list[dict] = None,
-                   images: list[dict] = None) -> list[KnowledgeObject]:
-        """路由单个页面 → 返回该页面的知识对象列表"""
-        classification = self.classifier.classify(
-            page_num, text, blocks, images)
+    def route_page(self, page_text: str, page_num: int = 0,
+                   has_images: bool = False, image_count: int = 0,
+                   ocr_confidence: float = 1.0, table_rows: int = 0,
+                   total_lines: int = 0) -> ModalityRoute:
+        """路由单个页面"""
+        modality = self.classifier.classify(
+            page_text, has_images, image_count, ocr_confidence,
+            table_rows, total_lines,
+        )
 
-        objects = []
+        reasons = {
+            "text": "High text density",
+            "table": "Significant table content detected",
+            "figure": "Image-heavy, low text density",
+            "diagram": "Diagram characters detected",
+            "ocr": "Low OCR confidence",
+        }
 
-        if classification.modality == "text":
-            objects.append(TextBlock(
-                object_id=f"p{page_num}_text",
-                page=page_num, text=text,
-                confidence=classification.confidence,
-            ))
+        return ModalityRoute(
+            modality=modality,
+            confidence=0.9 if modality == "text" else 0.7,
+            reason=reasons.get(modality, ""),
+        )
 
-        elif classification.modality == "table":
-            # 尝试提取表格
-            tables = self._extract_tables(text, page_num)
-            objects.extend(tables)
-            # 剩余文本也保留
-            if text.strip():
-                objects.append(TextBlock(
-                    object_id=f"p{page_num}_text",
-                    page=page_num, text=text,
-                    confidence=0.5,
-                ))
+    def route_document(self, pages: list[dict]) -> list[ModalityRoute]:
+        """路由整个文档的所有页面"""
+        routes = []
+        for p in pages:
+            text = p.get("text", "")
+            route = self.route_page(
+                page_text=text,
+                page_num=p.get("num", 0),
+                has_images=bool(p.get("images")),
+                image_count=len(p.get("images", [])),
+            )
+            routes.append(route)
+        return routes
 
-        elif classification.modality == "figure":
-            for img in (images or []):
-                objects.append(FigureBlock(
-                    object_id=f"p{page_num}_fig",
-                    page=page_num,
-                    image_path=img.get("path", ""),
-                    caption=img.get("caption", ""),
-                    confidence=classification.confidence,
-                ))
-
-        elif classification.modality == "diagram":
-            objects.append(DiagramBlock(
-                object_id=f"p{page_num}_diag",
-                page=page_num,
-                image_path=(images[0].get("path", "") if images else ""),
-                diagram_type="unknown",
-                confidence=classification.confidence,
-            ))
-
-        elif classification.modality == "ocr":
-            objects.append(OCRRegion(
-                object_id=f"p{page_num}_ocr",
-                page=page_num, text=text,
-                ocr_confidence=classification.confidence,
-            ))
-
-        return objects
-
-    @staticmethod
-    def _extract_tables(text: str, page_num: int) -> list[TableBlock]:
-        """从文本中提取表格结构"""
-        tables = []
-        lines = text.split('\n')
-        table_lines = []
-        in_table = False
-
-        for line in lines:
-            if '|' in line and line.count('|') >= 2:
-                table_lines.append(line)
-                in_table = True
-            elif in_table and table_lines:
-                # 表格结束
-                cells = []
-                for tl in table_lines:
-                    row = [c.strip() for c in tl.split('|')[1:-1]]
-                    if any(c for c in row):
-                        cells.append(row)
-                if cells:
-                    tables.append(TableBlock(
-                        object_id=f"p{page_num}_tbl{len(tables)}",
-                        page=page_num,
-                        raw_cells=cells,
-                        rows=len(cells),
-                        cols=len(cells[0]) if cells else 0,
-                        normalized_rows=cells,
-                    ))
-                table_lines = []
-                in_table = False
-
-        if table_lines:
-            cells = []
-            for tl in table_lines:
-                row = [c.strip() for c in tl.split('|')[1:-1]]
-                if any(c for c in row):
-                    cells.append(row)
-            if cells:
-                tables.append(TableBlock(
-                    object_id=f"p{page_num}_tbl{len(tables)}",
-                    page=page_num, raw_cells=cells,
-                    rows=len(cells),
-                    cols=len(cells[0]) if cells else 0,
-                    normalized_rows=cells,
-                ))
-
-        return tables
+    def stats(self, routes: list[ModalityRoute]) -> dict:
+        """统计模态分布"""
+        dist = {}
+        for r in routes:
+            dist[r.modality] = dist.get(r.modality, 0) + 1
+        return {"total_pages": len(routes), "distribution": dist}
 
 
-# ── Interpreter stubs ───────────────────────────
-
-class TableInterpreter:
-    """表格解释器 — 结构恢复、无边框表格修复"""
-
-    @staticmethod
-    def normalize(table: TableBlock) -> TableBlock:
-        """行列归一化"""
-        if not table.raw_cells:
-            return table
-        max_cols = max(len(row) for row in table.raw_cells)
-        normalized = []
-        for row in table.raw_cells:
-            normalized.append(row + [''] * (max_cols - len(row)))
-        table.normalized_rows = normalized
-        table.rows = len(normalized)
-        table.cols = max_cols
-        return table
-
-    @staticmethod
-    def to_text(table: TableBlock) -> str:
-        """表格转为可检索文本"""
-        parts = []
-        if table.caption:
-            parts.append(f"[表格] {table.caption}")
-        parts.append(table.to_markdown())
-        return "\n".join(parts)
-
-
-class DiagramInterpreter:
-    """图示解释器 — 视觉信息转结构化描述
-
-    当前为 stub，后续可接入视觉模型进行深层理解。
-    """
-
-    @staticmethod
-    def basic_analysis(diagram: DiagramBlock) -> str:
-        """基于 OCR 标签的初步分析"""
-        parts = [f"[图示] Page {diagram.page}"]
-        if diagram.diagram_type:
-            parts.append(f"类型: {diagram.diagram_type}")
-        if diagram.ocr_labels:
-            parts.append("标签: " + ", ".join(diagram.ocr_labels))
-        if diagram.explanation:
-            parts.append(diagram.explanation)
-        return "\n".join(parts)
-
-
-# ── Vision Adapter ──────────────────────────────
+# ── Vision Adapter ───────────────────────────────
 
 class VisionAdapter:
     """统一视觉模型调用接口
 
     对接 MiniMax / GPT-4V / Claude Vision 等视觉模型。
+    当前实现: MiniMax API。
     """
 
-    def __init__(self, provider: str = None):
-        """
-        provider: 视觉模型提供商。None=自动选择（优先 minimax）。
-        """
-        self.provider = provider or self._detect_provider()
+    def __init__(self, provider: str = "minimax"):
+        self.provider = provider
 
-    @staticmethod
-    def _detect_provider() -> str:
-        import os
-        if os.environ.get("DEEPSEEK_API_KEY"):
-            return "deepseek"    # DeepSeek supports vision via API
-        if os.environ.get("MINIMAX_API_KEY"):
-            return "minimax"
-        return "none"
+    def describe_image(self, image_path: str, prompt: str = "") -> str:
+        """用视觉模型描述图片内容"""
+        if self.provider == "minimax":
+            return self._describe_minimax(image_path, prompt)
+        return ""
 
-    def describe_image(self, image_path: str, prompt: str = "") -> Optional[str]:
-        """让视觉模型描述图片内容"""
-        if self.provider == "none":
-            return None
+    def explain_diagram(self, image_path: str,
+                        ocr_labels: list[str] = None) -> str:
+        """解释流程图/结构图"""
+        labels_text = ", ".join(ocr_labels or [])
+        prompt = (
+            "你是一个工程图示解释器。请描述这张图的结构和含义。"
+        )
+        if labels_text:
+            prompt += f" 图中识别到的文字标签: {labels_text}."
+        return self.describe_image(image_path, prompt)
+
+    def _describe_minimax(self, image_path: str, prompt: str) -> str:
+        """MiniMax Vision API"""
+        import os, base64, httpx
+        from config.env_loader import load_hermes_env
+        load_hermes_env()
+
+        api_key = os.environ.get("MINIMAX_API_KEY", os.environ.get("MINIMAX_CN_API_KEY", ""))
+        if not api_key:
+            return ""
+
+        # Read and encode image
+        try:
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode()
+        except Exception:
+            return ""
 
         try:
-            if self.provider == "minimax":
-                return self._minimax_vision(image_path, prompt)
-            if self.provider == "deepseek":
-                return self._deepseek_vision(image_path, prompt)
+            resp = httpx.post(
+                "https://api.minimax.chat/v1/text/chatcompletion_v2",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "abab6.5s-chat",
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt or "Describe this image briefly."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                        ],
+                    }],
+                    "temperature": 0.3,
+                    "max_tokens": 500,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
         except Exception:
-            return None
+            return ""
 
-        return None
 
-    def _minimax_vision(self, image_path: str, prompt: str) -> str:
-        import os, httpx, base64
-        with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode()
+# ── Modality Affinity ────────────────────────────
 
-        resp = httpx.post(
-            "https://api.minimax.chat/v1/text/chatcompletion_v2",
-            headers={
-                "Authorization": f"Bearer {os.environ.get('MINIMAX_API_KEY', '')}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "abab6.5s-chat",
-                "messages": [{"role": "user", "content": [
-                    {"type": "text", "text": prompt or "描述这张图片的内容"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                ]}],
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+class ModalityAffinity:
+    """判断用户问题更适合哪种证据类型"""
 
-    def _deepseek_vision(self, image_path: str, prompt: str) -> str:
-        import os, httpx, base64
-        with open(image_path, "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode()
+    TABLE_KEYWORDS = [
+        "表格", "对照表", "费用表", "参数表", "规格表",
+        "标准是多少", "上限是多少", "多少元", "多少米",
+    ]
+    DIAGRAM_KEYWORDS = [
+        "流程图", "拓扑图", "结构图", "示意图", "框图",
+        "什么关系", "怎么连接", "架构", "怎么走",
+    ]
+    FIGURE_KEYWORDS = [
+        "截图", "图片", "照片", "图示", "界面",
+        "长什么样", "什么样子",
+    ]
 
-        resp = httpx.post(
-            "https://api.deepseek.com/chat/completions",
-            headers={
-                "Authorization": f"Bearer {os.environ.get('DEEPSEEK_API_KEY', '')}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": [
-                    {"type": "text", "text": prompt or "描述这张图片的内容"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-                ]}],
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+    @classmethod
+    def detect(cls, question: str) -> str:
+        """返回: text | table | diagram | figure | mixed"""
+        q = question.lower()
+        scores = {"text": 0, "table": 0, "diagram": 0, "figure": 0}
+
+        for kw in cls.TABLE_KEYWORDS:
+            if kw in q:
+                scores["table"] += 2      # 权重高于 text
+        for kw in cls.DIAGRAM_KEYWORDS:
+            if kw in q:
+                scores["diagram"] += 2
+        for kw in cls.FIGURE_KEYWORDS:
+            if kw in q:
+                scores["figure"] += 2
+
+        # 多条命中 → mixed
+        non_text = sum(1 for k in ("table", "diagram", "figure") if scores[k] > 0)
+        if non_text > 1:
+            return "mixed"
+
+        best = max(scores, key=scores.get)
+        return best if scores[best] > 0 else "text"

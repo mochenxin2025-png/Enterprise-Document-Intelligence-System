@@ -1,120 +1,215 @@
-"""Knowledge Objects — 多模态统一知识对象
+"""Knowledge Objects — 统一知识对象层
 
-从"所有内容都是文本 chunk"升级为"文本/表格/图示/OCR区域各有专门对象"。
+从"所有内容都是文本 chunk"升级为"不同类型走不同处理链"。
+
+五大对象类型:
+  TextBlock    — 纯文本段落
+  TableBlock   — 表格数据
+  FigureBlock  — 图片/截图
+  DiagramBlock — 流程图/结构图
+  OCRRegion    — OCR 识别的区域
 """
-
 from dataclasses import dataclass, field
 from typing import Optional
 
 
-# ── Base ────────────────────────────────────────
+# ── Base ─────────────────────────────────────────
 
 @dataclass
 class KnowledgeObject:
-    """所有知识对象的基类"""
-    object_id: str = ""
+    """知识对象基类"""
+    obj_type: str = "unknown"
     page: int = 0
-    bbox: tuple = ()          # (x0, y0, x1, y1) on page
-    confidence: float = 0.0
+    section: str = ""
+    source: str = ""
+    confidence: float = 1.0
     metadata: dict = field(default_factory=dict)
 
-    def object_type(self) -> str:
-        return "unknown"
+    def to_dict(self) -> dict:
+        return {
+            "type": self.obj_type,
+            "page": self.page,
+            "section": self.section,
+            "source": self.source,
+            "confidence": self.confidence,
+        }
+
+    def to_searchable_text(self) -> str:
+        """转为可检索文本（用于 embedding）"""
+        return ""
 
 
-# ── Text Block ──────────────────────────────────
+# ── TextBlock ────────────────────────────────────
 
 @dataclass
 class TextBlock(KnowledgeObject):
-    """纯文本块 — 替代传统 chunk"""
+    """纯文本段落"""
     text: str = ""
-    section: str = ""
+    chunk_id: int = 0
     chapter: str = ""
-    chunk_index: int = 0
 
-    def object_type(self) -> str:
-        return "text"
+    def __post_init__(self):
+        self.obj_type = "text"
+
+    def to_searchable_text(self) -> str:
+        return self.text
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({"text": self.text[:500], "chapter": self.chapter})
+        return d
 
 
-# ── Table Block ─────────────────────────────────
+# ── TableBlock ───────────────────────────────────
 
 @dataclass
 class TableBlock(KnowledgeObject):
-    """表格块 — 结构化数据"""
-    raw_cells: list[list[str]] = field(default_factory=list)
-    rows: int = 0
-    cols: int = 0
+    """表格数据"""
     caption: str = ""
-    title: str = ""
-    normalized_rows: list[list[str]] = field(default_factory=list)
+    headers: list[str] = field(default_factory=list)
+    rows: list[list[str]] = field(default_factory=list)
+    raw_text: str = ""
 
-    def object_type(self) -> str:
-        return "table"
+    def __post_init__(self):
+        self.obj_type = "table"
+
+    @property
+    def row_count(self) -> int:
+        return len(self.rows)
 
     def to_markdown(self) -> str:
-        """输出为 Markdown 表格"""
-        if not self.normalized_rows:
+        """转为 Markdown 表格"""
+        if not self.headers and not self.rows:
             return ""
         lines = []
-        headers = self.normalized_rows[0] if self.normalized_rows else []
-        if headers:
-            lines.append("| " + " | ".join(str(c) for c in headers) + " |")
-            lines.append("| " + " | ".join("---" for _ in headers) + " |")
-        for row in self.normalized_rows[1:]:
-            lines.append("| " + " | ".join(str(c) for c in row) + " |")
+        h = self.headers or [f"Col{i}" for i in range(len(self.rows[0]) if self.rows else 1)]
+        lines.append("| " + " | ".join(h) + " |")
+        lines.append("| " + " | ".join(["---"] * len(h)) + " |")
+        for row in self.rows[:50]:
+            padded = row + [""] * (len(h) - len(row))
+            lines.append("| " + " | ".join(padded[:len(h)]) + " |")
         return "\n".join(lines)
 
+    def to_searchable_text(self) -> str:
+        return f"{self.caption}\n{self.to_markdown()}"
 
-# ── Figure Block ────────────────────────────────
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({
+            "caption": self.caption,
+            "headers": self.headers,
+            "row_count": self.row_count,
+        })
+        return d
+
+
+# ── FigureBlock ──────────────────────────────────
 
 @dataclass
 class FigureBlock(KnowledgeObject):
-    """图片/插图块"""
+    """图片/截图"""
     image_path: str = ""
     caption: str = ""
-    vision_summary: str = ""       # 视觉模型描述
+    bbox: tuple = ()           # (x0, y0, x1, y1)
+    vision_summary: str = ""   # 视觉模型生成的描述
 
-    def object_type(self) -> str:
-        return "figure"
+    def __post_init__(self):
+        self.obj_type = "figure"
+
+    def to_searchable_text(self) -> str:
+        return f"{self.caption} {self.vision_summary}"
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({
+            "caption": self.caption,
+            "has_vision_summary": bool(self.vision_summary),
+        })
+        return d
 
 
-# ── Diagram Block ───────────────────────────────
+# ── DiagramBlock ─────────────────────────────────
 
 @dataclass
 class DiagramBlock(KnowledgeObject):
-    """图示块 — 流程图/结构图/工程图"""
+    """流程图/结构图/工程示意图"""
     image_path: str = ""
     ocr_labels: list[str] = field(default_factory=list)
-    detected_relations: list[dict] = field(default_factory=list)
-    diagram_type: str = ""          # flowchart / architecture / schematic
-    explanation: str = ""            # 图示文字解释
+    detected_relations: list[dict] = field(default_factory=list)  # [{from, to, type}]
+    diagram_explanation: str = ""
 
-    def object_type(self) -> str:
-        return "diagram"
+    def __post_init__(self):
+        self.obj_type = "diagram"
+
+    def to_searchable_text(self) -> str:
+        labels = ", ".join(self.ocr_labels)
+        return f"Diagram: {labels}\n{self.diagram_explanation}"
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({
+            "labels": self.ocr_labels[:10],
+            "relations_count": len(self.detected_relations),
+        })
+        return d
 
 
-# ── OCR Region ──────────────────────────────────
+# ── OCRRegion ────────────────────────────────────
 
 @dataclass
 class OCRRegion(KnowledgeObject):
-    """OCR 识别区域"""
-    text: str = ""
+    """OCR 识别的文字区域"""
+    bbox: tuple = ()            # (x0, y0, x1, y1)
+    ocr_text: str = ""
     ocr_confidence: float = 0.0
 
-    def object_type(self) -> str:
-        return "ocr_region"
+    def __post_init__(self):
+        self.obj_type = "ocr"
+        self.confidence = self.ocr_confidence
+
+    def to_searchable_text(self) -> str:
+        return self.ocr_text
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({"text": self.ocr_text[:200]})
+        return d
 
 
-# ── Factory ─────────────────────────────────────
+# ── Parsed Document (upgraded) ───────────────────
 
-def create_knowledge_object(obj_type: str, **kwargs) -> KnowledgeObject:
-    """工厂方法：按类型创建知识对象"""
-    mapping = {
-        "text": TextBlock,
-        "table": TableBlock,
-        "figure": FigureBlock,
-        "diagram": DiagramBlock,
-        "ocr_region": OCRRegion,
-    }
-    cls = mapping.get(obj_type, TextBlock)
-    return cls(**kwargs)
+@dataclass
+class RichDocument:
+    """增强版文档 — 包含多种知识对象"""
+    doc_id: str = ""
+    filename: str = ""
+    page_count: int = 0
+    objects: list[KnowledgeObject] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+
+    @property
+    def text_blocks(self) -> list[TextBlock]:
+        return [o for o in self.objects if isinstance(o, TextBlock)]
+
+    @property
+    def table_blocks(self) -> list[TableBlock]:
+        return [o for o in self.objects if isinstance(o, TableBlock)]
+
+    @property
+    def figure_blocks(self) -> list[FigureBlock]:
+        return [o for o in self.objects if isinstance(o, FigureBlock)]
+
+    @property
+    def diagram_blocks(self) -> list[DiagramBlock]:
+        return [o for o in self.objects if isinstance(o, DiagramBlock)]
+
+    def stats(self) -> dict:
+        return {
+            "doc_id": self.doc_id,
+            "filename": self.filename,
+            "pages": self.page_count,
+            "text_blocks": len(self.text_blocks),
+            "tables": len(self.table_blocks),
+            "figures": len(self.figure_blocks),
+            "diagrams": len(self.diagram_blocks),
+        }

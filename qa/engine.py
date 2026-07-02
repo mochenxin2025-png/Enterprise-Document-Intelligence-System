@@ -319,3 +319,89 @@ class QAEngine:
                       '[EMAIL_REDACTED]', text)
         text = re.sub(r'(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)', '[IP_REDACTED]', text)
         return text
+
+    # ── v3: Modality-Aware ────────────────────────
+
+    def ask_v3(self, question: str, top_k: int = 10,
+               user_context: dict = None) -> dict:
+        """v3: 模态感知问答 — 根据问题类型选择证据来源
+
+        与 v2 的区别: 增加 ModalityAffinity，引导检索偏好。
+        文本问题 → 文本检索
+        表格问题 → 优先 TableBlock
+        图示问题 → 优先 DiagramBlock + Vision
+        """
+        from multimodal import ModalityAffinity
+        t_start = time.time()
+        user_ctx = user_context or {}
+        security_alerts = []
+
+        # QA Pair 优先
+        qa_match = self.qa_registry.search(question, tenant_id=self.tenant_id)
+        if qa_match:
+            return {"answer": qa_match.answer, "confidence": 0.99,
+                    "citations": [{"document": "QA Pair", "page": 0, "relevance": 1.0}],
+                    "evidence_count": 1, "intent": "qa_pair_match",
+                    "modality_affinity": "qa_pair"}
+
+        # 模态亲和度
+        affinity = ModalityAffinity.detect(question)
+        print(f"[v3] Modality affinity: {affinity}")
+
+        # 根据亲和度调整检索策略
+        if affinity == "table":
+            # 表格类问题: 加大 top_k，优先匹配含表格关键词的 chunk
+            results = self._retrieve(
+                f"表格 数据 {question}", top_k * 2, user_ctx)
+        elif affinity in ("diagram", "figure"):
+            results = self._retrieve(
+                f"图示 结构 {question}", top_k * 2, user_ctx)
+        else:
+            # 默认: Parent Document Retrieval
+            embedding = self.embedder.encode_query(question)
+            results = self.store.search_with_parent_retrieval(
+                embedding, top_k=top_k, user_context=user_ctx, parent_top_n=3)
+
+        if not results:
+            results = self._retrieve(question, top_k * 2, user_ctx)
+
+        # Reranker
+        if len(results) > 5:
+            texts = [r.text for r in results]
+            scores = [r.score for r in results]
+            pages = [r.page for r in results]
+            try:
+                new_order = self.reranker.rerank(question, texts, scores, pages)
+                results = [results[i] for i in new_order if i < len(results)]
+            except Exception:
+                pass
+
+        fused = rank_results(results)
+        conflicts = detect_conflicts(results)
+        if not fused:
+            return self._no_answer()
+
+        # L4 + L5 + 生成
+        if user_ctx:
+            verifier = PermissionVerifier()
+            vresult, fused = verifier.verify_batch(
+                fused, user_ctx, self.tenant_id, db_conn=self.store.conn)
+            if not vresult.passed:
+                security_alerts.extend(vresult.alerts)
+
+        ctx = self._build_context(fused, conflicts)
+        answer = self._generate(question, ctx,
+            affinity if affinity in ("table", "diagram") else "basic").content
+        answer = self._sanitize_output(answer)
+
+        confidence = self._estimate_confidence(fused, conflicts)
+        result = {"answer": answer, "confidence": confidence,
+                  "citations": self._extract_citations(fused),
+                  "evidence_count": len(fused),
+                  "intent": "v3_multimodal",
+                  "modality_affinity": affinity,
+                  "security_alerts": security_alerts if security_alerts else []}
+
+        self._audit_log(question, result, user_ctx, t_start, security_alerts,
+                        len(security_alerts) == 0)
+        return result
