@@ -763,6 +763,11 @@ class TestParentDocRetrieval:
         from retrieval import VectorStore
         import numpy as np
         store = VectorStore()
+        # Clean stale data
+        store.conn.execute("DELETE FROM chunks WHERE tenant_id='tPDRa'")
+        store.conn.execute("DELETE FROM documents WHERE tenant_id='tPDRa'")
+        store.conn.commit()
+
         store.insert_document("pdr1", "pdr.pdf", "/f/pdr.pdf", 1, 100, {}, "tPDRa")
         c1 = store.insert_chunk("pdr1", 0, "第1段", 1, "", "", {}, "tPDRa")
         c2 = store.insert_chunk("pdr1", 1, "第2段", 2, "", "", {}, "tPDRa")
@@ -782,6 +787,10 @@ class TestParentDocRetrieval:
         from retrieval import VectorStore
         import numpy as np
         store = VectorStore()
+        store.conn.execute("DELETE FROM chunks WHERE tenant_id='tPDRb'")
+        store.conn.execute("DELETE FROM documents WHERE tenant_id='tPDRb'")
+        store.conn.commit()
+
         store.insert_document("pdr2", "parent.pdf", "/f/parent.pdf", 2, 200, {}, "tPDRb")
         c1 = store.insert_chunk("pdr2", 0, "AAA摘要概述", 1, "", "", {}, "tPDRb")
         c2 = store.insert_chunk("pdr2", 1, "BBB详细参数MQTT配置步骤", 4, "", "", {}, "tPDRb")
