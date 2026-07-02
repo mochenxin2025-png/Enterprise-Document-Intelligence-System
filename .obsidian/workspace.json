@@ -185,17 +185,18 @@
   },
   "active": "ea6bf99c35d37193",
   "lastOpenFiles": [
+    "agent/__pycache__/__init__.cpython-311.pyc",
+    "agent/__pycache__",
     "data/edis.db-shm",
     "data/edis.db-wal",
+    "docs/agent-integration.md",
+    "agent/adapters.py",
+    "agent/http_server.py",
+    "agent/__init__.py",
+    "agent",
     "jobs",
     "logs",
     "edis_platform/__pycache__/path_manager.cpython-311.pyc",
-    "edis_platform/__pycache__/runtime_profiles.cpython-311.pyc",
-    "edis_platform/__pycache__/__init__.cpython-311.pyc",
-    "edis_platform/__pycache__",
-    "edis_platform/__init__.py",
-    "edis_platform/runtime_profiles.py",
-    "edis_platform/path_manager.py",
     "docs/platform-compatibility.md"
   ]
 }
