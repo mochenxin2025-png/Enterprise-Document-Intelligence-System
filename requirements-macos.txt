@@ -1,0 +1,7 @@
+# macOS / Linux extras
+torch>=2.0
+transformers>=4.40
+python-docx
+beautifulsoup4
+# PaddleOCR on macOS/Linux: install via pip, may need additional system deps
+# paddleocr>=3.0

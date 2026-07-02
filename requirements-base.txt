@@ -1,0 +1,8 @@
+# Base requirements — all platforms
+httpx>=0.24
+pymupdf>=1.23
+sqlite-vec>=0.1
+numpy>=1.24
+pyyaml>=6.0
+chardet>=5.0
+pytest>=7.0

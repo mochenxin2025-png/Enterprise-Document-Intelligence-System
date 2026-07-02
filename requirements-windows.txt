@@ -1,0 +1,6 @@
+# Windows extras
+torch>=2.0
+transformers>=4.40
+python-docx
+beautifulsoup4
+paddleocr>=3.0

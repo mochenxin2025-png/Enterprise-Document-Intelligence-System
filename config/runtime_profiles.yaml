@@ -1,0 +1,99 @@
+# EDIS Runtime Profiles — per-platform configuration presets
+#
+# Auto-selected by platform.runtime_profiles.get_profile()
+# based on platform.detect() output.
+#
+# To override: set EDIS_PROFILE env var to one of the keys below.
+
+# ── Windows ─────────────────────────────────────
+windows_cpu:
+  embedding:
+    device: cpu
+    batch_size: 16
+    num_workers: 2
+  ocr:
+    threads: 2
+  sqlite:
+    pragmas:
+      journal_mode: WAL
+      busy_timeout: 5000
+  ingestion:
+    parallel_threshold: 100
+    workers: 4
+
+windows_cuda:
+  embedding:
+    device: cuda
+    batch_size: 64
+    num_workers: 4
+  ocr:
+    threads: 4
+  sqlite:
+    pragmas:
+      journal_mode: WAL
+      busy_timeout: 5000
+  ingestion:
+    parallel_threshold: 50
+    workers: 8
+
+# ── macOS ───────────────────────────────────────
+mac_apple_silicon:
+  embedding:
+    device: mps
+    batch_size: 32
+    num_workers: 4
+  ocr:
+    threads: 4
+  sqlite:
+    pragmas:
+      journal_mode: WAL
+      busy_timeout: 5000
+  ingestion:
+    parallel_threshold: 100
+    workers: 4
+
+mac_intel:
+  embedding:
+    device: cpu
+    batch_size: 16
+    num_workers: 2
+  ocr:
+    threads: 2
+  sqlite:
+    pragmas:
+      journal_mode: WAL
+      busy_timeout: 5000
+  ingestion:
+    parallel_threshold: 100
+    workers: 4
+
+# ── Linux ───────────────────────────────────────
+linux_cpu:
+  embedding:
+    device: cpu
+    batch_size: 16
+    num_workers: 2
+  ocr:
+    threads: 2
+  sqlite:
+    pragmas:
+      journal_mode: WAL
+      busy_timeout: 5000
+  ingestion:
+    parallel_threshold: 100
+    workers: 4
+
+linux_cuda:
+  embedding:
+    device: cuda
+    batch_size: 64
+    num_workers: 4
+  ocr:
+    threads: 4
+  sqlite:
+    pragmas:
+      journal_mode: WAL
+      busy_timeout: 5000
+  ingestion:
+    parallel_threshold: 50
+    workers: 8

@@ -763,14 +763,14 @@ class TestParentDocRetrieval:
         from retrieval import VectorStore
         import numpy as np
         store = VectorStore()
-        store.insert_document("pdr1", "pdr.pdf", "/f/pdr.pdf", 1, 100, {}, "tPDRx")
-        c1 = store.insert_chunk("pdr1", 0, "第1段", 1, "", "", {}, "tPDRx")
-        c2 = store.insert_chunk("pdr1", 1, "第2段", 2, "", "", {}, "tPDRx")
+        store.insert_document("pdr1", "pdr.pdf", "/f/pdr.pdf", 1, 100, {}, "tPDRa")
+        c1 = store.insert_chunk("pdr1", 0, "第1段", 1, "", "", {}, "tPDRa")
+        c2 = store.insert_chunk("pdr1", 1, "第2段", 2, "", "", {}, "tPDRa")
         emb = np.zeros(1024, dtype=np.float32).tolist()
         store.insert_embedding(c1, emb)
         store.insert_embedding(c2, emb)
 
-        chunks = store.get_document_chunks("pdr.pdf", "tPDRx")
+        chunks = store.get_document_chunks("pdr.pdf", "tPDRa")
         store.close()
 
         assert len(chunks) == 2
@@ -782,16 +782,16 @@ class TestParentDocRetrieval:
         from retrieval import VectorStore
         import numpy as np
         store = VectorStore()
-        store.insert_document("pdr2", "parent.pdf", "/f/parent.pdf", 2, 200, {}, "tPDRy")
-        c1 = store.insert_chunk("pdr2", 0, "AAA摘要概述", 1, "", "", {}, "tPDRy")
-        c2 = store.insert_chunk("pdr2", 1, "BBB详细参数MQTT配置步骤", 4, "", "", {}, "tPDRy")
+        store.insert_document("pdr2", "parent.pdf", "/f/parent.pdf", 2, 200, {}, "tPDRb")
+        c1 = store.insert_chunk("pdr2", 0, "AAA摘要概述", 1, "", "", {}, "tPDRb")
+        c2 = store.insert_chunk("pdr2", 1, "BBB详细参数MQTT配置步骤", 4, "", "", {}, "tPDRb")
         emb = np.zeros(1024, dtype=np.float32).tolist()
         store.insert_embedding(c1, emb)
         store.insert_embedding(c2, emb)
 
         # Parent retrieval: 应该在 TopK 后拉取整个文档
         results = store.search_with_parent_retrieval(
-            emb, top_k=2, tenant_id="tPDRy", parent_top_n=1)
+            emb, top_k=2, tenant_id="tPDRb", parent_top_n=1)
         store.close()
 
         # 应该返回文档的全部 2 个 chunk，不仅 TopK

@@ -1,0 +1,6 @@
+# Linux extras
+torch>=2.0 --index-url https://download.pytorch.org/whl/cpu
+transformers>=4.40
+python-docx
+beautifulsoup4
+# PaddleOCR: see scripts/install_linux.sh for system deps

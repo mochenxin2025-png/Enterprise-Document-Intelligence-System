@@ -1,0 +1,201 @@
+{
+  "main": {
+    "id": "14e89aa9432a6ad9",
+    "type": "split",
+    "children": [
+      {
+        "id": "475b93746f04f815",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "ea6bf99c35d37193",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "FRAMEWORK_TECH_STACK.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "FRAMEWORK_TECH_STACK"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "c0de0abd3ab4e6bf",
+    "type": "split",
+    "children": [
+      {
+        "id": "e5026fd8e566f589",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "e64314a4179dd75a",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "b362356c1642c4c3",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "902d1ae33891012b",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "755239abe282d7e8",
+    "type": "split",
+    "children": [
+      {
+        "id": "fbd97356b823b934",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "84036d04e4b877be",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "FRAMEWORK_TECH_STACK.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "FRAMEWORK_TECH_STACK 的反向链接列表"
+            }
+          },
+          {
+            "id": "3c35eb18788b1d50",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "FRAMEWORK_TECH_STACK.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "FRAMEWORK_TECH_STACK 的出链列表"
+            }
+          },
+          {
+            "id": "e381ec0ddd4e7df9",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "52ef60bf3ae963c9",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "427af3f3cd65ab2e",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "FRAMEWORK_TECH_STACK.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "FRAMEWORK_TECH_STACK 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "ea6bf99c35d37193",
+  "lastOpenFiles": [
+    "data/edis.db-shm",
+    "data/edis.db-wal",
+    "jobs",
+    "logs",
+    "edis_platform/__pycache__/path_manager.cpython-311.pyc",
+    "edis_platform/__pycache__/runtime_profiles.cpython-311.pyc",
+    "edis_platform/__pycache__/__init__.cpython-311.pyc",
+    "edis_platform/__pycache__",
+    "edis_platform/__init__.py",
+    "edis_platform/runtime_profiles.py",
+    "edis_platform/path_manager.py",
+    "docs/platform-compatibility.md"
+  ]
+}
