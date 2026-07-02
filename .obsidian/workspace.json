@@ -185,18 +185,18 @@
   },
   "active": "ea6bf99c35d37193",
   "lastOpenFiles": [
-    "agent/__pycache__/__init__.cpython-311.pyc",
-    "agent/__pycache__",
     "data/edis.db-shm",
     "data/edis.db-wal",
+    "jobs/6f0019829e5a/output/result.json",
+    "jobs/6f0019829e5a/output",
+    "jobs/6f0019829e5a/logs",
+    "jobs/6f0019829e5a/input",
+    "jobs/6f0019829e5a/cache",
+    "jobs/6f0019829e5a",
+    "agent_runtime/__pycache__/runtime.cpython-311.pyc",
+    "agent_runtime/__pycache__/__init__.cpython-311.pyc",
+    "agent_runtime/__pycache__",
     "docs/agent-integration.md",
-    "agent/adapters.py",
-    "agent/http_server.py",
-    "agent/__init__.py",
-    "agent",
-    "jobs",
-    "logs",
-    "edis_platform/__pycache__/path_manager.cpython-311.pyc",
     "docs/platform-compatibility.md"
   ]
 }
